@@ -50,7 +50,7 @@ Win11 上用 **CMD**（PowerShell 默认策略是 `Restricted`，直接敲 `npm`
 `npm.ps1` 挡下；要么用 CMD，要么在 PowerShell 里写 `npm.cmd`）：
 
 ```cmd
-cd /d D:\beatlooker
+cd /d D:\beatlooker\beatlooker
 npm run dev        :: 只有本机，http
 npm run dev:lan    :: 局域网 + https，手机可用
 ```
@@ -142,6 +142,30 @@ IP 走的是自环路径，不经过防火墙入站过滤，通了也证明不�
 
 不想吃这个麻烦就用 `start-dev.bat local` 切成纯 HTTP + 只听 localhost。
 `npm run dev` 也仍然是本机模式，给不想看到证书警告的场景用。
+
+## 部署到 GitHub Pages
+
+推送到 `main` 会自动构建并发布，工作流见 `.github/workflows/deploy.yml`。
+
+- 线上地址：<https://simonkongkit.github.io/beatlooker/>
+- 仓库地址：<https://github.com/simonkongkit/beatlooker>
+
+项目页不在域名根目录，而在 `/<仓库名>/` 下，所以构建时用环境变量 `APP_BASE`
+把 Vite 的 `base` 顶成 `/<仓库名>/`（CI 里动态取仓库名）。想在本地复现 Pages
+那一次构建：
+
+```cmd
+set APP_BASE=/beatlooker/
+npm run build
+```
+
+**加载 worklet 的路径必须跟着 `base` 走，写死了会静默失效**：
+`src/lib/microphone.ts` 里用的是 `import.meta.env.BASE_URL + 'wave-worklet.js'`。
+写成 `/wave-worklet.js` 的话，部署到项目页后这个文件 404，表现是点「开始」没反应。
+（`index.html` 里的 `/favicon.svg` 由 Vite 构建时自动补 base 前缀，不用管。）
+
+麦克风要求安全上下文，**GitHub Pages 自带 HTTPS，所以线上能用**；反过来
+`file://` 双击打开、或走纯 `http://` 的局域网地址，都拿不到 `navigator.mediaDevices`。
 
 ## 从本地音频文件读取
 

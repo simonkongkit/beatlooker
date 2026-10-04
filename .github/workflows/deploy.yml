@@ -39,7 +39,11 @@ jobs:
           APP_BASE: /${{ github.event.repository.name }}/
         run: npm run build
 
+      # enablement: true —— 第一次跑时顺手把 Pages 站点开起来（Source 设为
+      # GitHub Actions），省得还要人去 Settings 里点一次；之后这个参数是幂等的。
       - uses: actions/configure-pages@v5
+        with:
+          enablement: true
 
       - uses: actions/upload-pages-artifact@v3
         with:
