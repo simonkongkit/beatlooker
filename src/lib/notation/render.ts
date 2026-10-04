@@ -841,15 +841,25 @@ function layoutTab(
  */
 let staffHits: { bar: number; index: number; x: number; y: number; r: number }[] = []
 
-/** 命中测试：落在哪个符头上（半径内取最近的一个）。没中就返回 null */
-export function staffHitTest(x: number, y: number): { bar: number; index: number } | null {
+/**
+ * 命中测试：落在哪个符头上（半径内取最近的一个）。没中就返回 null
+ *
+ * `slack` 是给**触屏**用的额外容差（像素）✓
+ * 桌面用鼠标 → 0 就够 ✓；手指要 10px 以上才点得中 ✓（Apple/Google 的建议是 44px 目标 ✓）
+ */
+export function staffHitTest(
+  x: number,
+  y: number,
+  slack = 0
+): { bar: number; index: number } | null {
   let best: { bar: number; index: number } | null = null
   let bestD = Infinity
   for (const h of staffHits) {
     const dx = x - h.x
     const dy = y - h.y
     const d = dx * dx + dy * dy
-    if (d <= h.r * h.r && d < bestD) {
+    const rr = h.r + slack
+    if (d <= rr * rr && d < bestD) {
       bestD = d
       best = { bar: h.bar, index: h.index }
     }
@@ -860,7 +870,12 @@ export function staffHitTest(x: number, y: number): { bar: number; index: number
 export function tabStringAt(
   y: number,
   canvasHeight: number,
-  mode: RenderRhythmOptions['mode']
+  mode: RenderRhythmOptions['mode'],
+  /**
+   * 触屏用的额外容差，单位是**弦间距的倍数**（默认 0）✓
+   * 桌面 0.6 就够 ✓；手指要放宽到 1.2 左右 ✓（相邻弦之间不再有死区 ✓）
+   */
+  slack = 0
 ): number | null {
   const gapBetweenBands = 8
   let top = 0
@@ -877,7 +892,8 @@ export function tabStringAt(
   const s = Math.round(raw)
   if (s < 1 || s > 6) return null
   // 离弦线超过 0.6 个间距就算没点中，避免"点空白处也选中弦"
-  if (Math.abs(raw - s) > 0.6) return null
+  // 触屏放宽到 0.6 + slack ✓（手指比鼠标粗得多 ✓）
+  if (Math.abs(raw - s) > 0.6 + slack) return null
   return s
 }
 

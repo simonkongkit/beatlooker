@@ -378,6 +378,105 @@ import { STANDARD, TUNING_PRESETS, stringFretToMidi, type Tuning } from './lib/n
     }
   }
 
+  /**
+   * 载入**默认谱子** —— 放在 public/ 里的那份 MusicXML。
+   *
+   * 用户要求："修改一下默认参数，让他显示我的谱子 53231323.musicxml" ✓
+   *
+   * 触发条件（两条）：
+   *   · URL 上写了 ?score=53231323  -> **强制**载入（不管有没有草稿 ✓ 方便分享/验证 ✓）
+   *   · 本地**没有**草稿            -> 当默认谱子载入 ✓✓
+   *     （有草稿说明用户自己在录谱 ✓ 不能覆盖他的东西 ✗）
+   *
+   * 放 public/ 而不是写死在代码里 ✗ —— 这样换一首曲子只要**换那个文件** ✓
+   * 不用改代码 ✓ 也不会把两份谱子对不上 ✓
+   */
+  async function loadDefaultScore(force = false): Promise<void> {
+    if (!force && savedDraft) return
+    try {
+      // 路径必须带上 base：部署到 GitHub Pages 项目页时应用在 /<repo>/ 下，
+      // 写死 '/53231323.musicxml' 会 404，而且这里是静默失败（下面 !res0.ok 直接 return），
+      // 表现是"线上打开没有默认谱子、也没有任何报错"。
+      const res0 = await fetch(`${import.meta.env.BASE_URL}53231323.musicxml`, {
+        cache: 'no-cache'
+      })
+      if (!res0.ok) return
+      const text = await res0.text()
+      const parsed = fromMusicXml(text)
+      if (!parsed.ok) {
+        importBad = true
+        importMsg = '默认谱子解析失败：' + parsed.error
+        return
+      }
+      rhythmBars = parsed.score.bars
+      activeBar = 0
+      beatsPerBar = parsed.score.beatsPerBar
+      beatUnit = parsed.score.beatUnit
+      keySignature = parsed.score.fifths
+      dotNext = false
+      restNext = false
+      importBad = false
+      const n = parsed.score.bars.reduce((a, b) => a + b.length, 0)
+      importMsg =
+        '默认谱子《' + parsed.score.title + '》：' + parsed.score.bars.length + ' 小节 / ' + n + ' 个音符'
+    } catch {
+      // 拿不到就安静地用原来那套兜底 ✓ 不打扰用户
+    }
+  }
+
+  /* ---------------- 六线谱录入的五个原子操作 ---------------- */
+
+  /**
+   * 这五个是**手机数字板和键盘共用**的 ✓✓
+   *
+   * 为什么不各写一份 ✗：键盘那条路是踩过坑才写对的（尤其是退格的顺序 ✗）
+   * 复制一份出来，两边迟早跑偏 ✓ 所以只在**入口**上分叉 ✓ 逻辑只有一份 ✓
+   */
+
+  /** 打一个品位数（等价于键盘敲数字）*/
+  function padAddFret(k: string): void {
+    if (!tabPick || !/^[0-9]$/.test(k)) return
+    const next = (fretBuf + k).slice(0, 2)
+    // 两位数只有 <= 24 才收（吉他最高 24 品）
+    fretBuf = next.length === 2 && Number(next) > 24 ? k : next
+  }
+
+  /** 把当前「弦 + 品」放进待输入和弦，并自动挪到下一根弦（等价于按空格）*/
+  function padCommitString(): void {
+    if (!tabPick || fretBuf === '') return
+    const fret = Math.max(0, Math.min(24, Number(fretBuf) || 0))
+    const next = [...pendingChord]
+    const i = next.findIndex((p) => p.string === tabPick!.string)
+    if (i >= 0) next[i] = { string: tabPick!.string, fret }
+    else next.push({ string: tabPick!.string, fret })
+    next.sort((a, b) => a.string - b.string)
+    pendingChord = next
+    fretBuf = ''
+    // 自动挪到下一根弦：6 → 5 → 4 → 3 → 2 → 1
+    if (tabPick!.string > 1) tabPick = { bar: tabPick!.bar, string: tabPick!.string - 1 }
+  }
+
+  /** 退格：先把"还没落谱的"退干净，再动已经落谱的音符 ✗✗（顺序不能反 ✓）*/
+  function padBackspace(): void {
+    if (fretBuf) {
+      fretBuf = fretBuf.slice(0, -1)
+    } else if (pendingChord.length && tabPick) {
+      const last = pendingChord[pendingChord.length - 1]
+      pendingChord = pendingChord.slice(0, -1)
+      tabPick = { bar: tabPick.bar, string: last.string }
+    } else {
+      // 待输入的全退完了，才取消选中。**不碰已经落谱的音符** ✓
+      tabPick = null
+    }
+  }
+
+  /** 取消这次录入 */
+  function padCancel(): void {
+    tabPick = null
+    fretBuf = ''
+    pendingChord = []
+  }
+
   function addBar() {
     if (rhythmBars.length >= SANITY_MAX_BARS) return
     rhythmBars = [...rhythmBars, []]
@@ -711,6 +810,26 @@ import { STANDARD, TUNING_PRESETS, stringFretToMidi, type Tuning } from './lib/n
   let playhead = $state<number | null>(null)
   /** 选中的乐器：只影响检测时的频带筛选，不影响已录到的数据 */
   let instrumentId = $state(savedDraft?.instrumentId ?? 'all')
+
+  /* ---------------- 触屏（手机）适配 ---------------- */
+
+  /**
+   * 是不是**手指**在操作（CSS 的 pointer: coarse）。
+   *
+   * 手机和桌面的差别不是"屏幕小" ✗ 是**输入方式**：
+   *   · 没有物理键盘 ✓ 而软键盘又会遮住半个屏幕 ✗
+   *   · 手指比鼠标粗得多 ✓ 现在 12px 的弦线判定**点不中** ✗
+   * 所以这里要两件事：**判定放宽** ✓ + **屏幕上的数字板** ✓
+   */
+  // ?pad=1 可以**强制**打开（桌面上也能验证 / 调试 ✓ 不写就按设备判断 ✓）
+  const isCoarse =
+    (typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+      ? window.matchMedia('(pointer: coarse)').matches
+      : false) ||
+    (typeof location !== 'undefined' && new URLSearchParams(location.search).get('pad') === '1')
+  /** 手指用的额外容差：符头 +10px ✓ 弦 +0.6 个间距（相邻弦之间就没有死区了 ✓）*/
+  const HIT_SLACK = isCoarse ? 10 : 0
+  const STRING_SLACK = isCoarse ? 0.6 : 0
   let showRef = $state(false)
   /** 检测出来的音名不再展示 ✓ 状态也就不需要了 ✓ */
 
@@ -1294,18 +1413,8 @@ let detectStats = $state({
     if (tabPick) {
       if (k === ' ' || k === 'Spacebar' || e.code === 'Space') {
         // 空格 = 把当前这个「弦 + 品」放进待输入和弦，并**立刻显示出来**
-        if (fretBuf !== '') {
-          const fret = Math.max(0, Math.min(24, Number(fretBuf) || 0))
-          const next = [...pendingChord]
-          const i = next.findIndex((p) => p.string === tabPick!.string)
-          if (i >= 0) next[i] = { string: tabPick!.string, fret }
-          else next.push({ string: tabPick!.string, fret })
-          next.sort((a, b) => a.string - b.string)
-          pendingChord = next
-          fretBuf = ''
-          // 自动挪到下一根弦：6 → 5 → 4 → 3 → 2 → 1（从低音弦往高音弦）
-          if (tabPick!.string > 1) tabPick = { bar: tabPick!.bar, string: tabPick!.string - 1 }
-        }
+        // 逻辑在 padCommitString 里 ✓ 手机数字板的「加入和弦」按钮走的是**同一个函数** ✓✓
+        padCommitString()
         e.preventDefault()
         return
       }
@@ -1325,9 +1434,7 @@ let detectStats = $state({
     // 这正是「点弦线 -> 打品位 -> 回车」的输入流程
     if (tabPick) {
       if (/^[0-9]$/.test(k)) {
-        const next = (fretBuf + k).slice(0, 2)
-        // 两位数只有 <= 24 才收（吉他最高 24 品）
-        fretBuf = next.length === 2 && Number(next) > 24 ? k : next
+        padAddFret(k)
         e.preventDefault()
         return
       }
@@ -1337,9 +1444,7 @@ let detectStats = $state({
         return
       }
       if (k === 'Escape') {
-        tabPick = null
-        fretBuf = ''
-        pendingChord = []
+        padCancel()
         e.preventDefault()
         return
       }
@@ -1351,17 +1456,7 @@ let detectStats = $state({
         // → 把已经落谱的**上一个和弦删掉** ✗✓ 用户报的就是这个 ✓
         //
         // 正确顺序：品位数 -> 待输入和弦的最后一个音 -> 取消选中 ✓
-        if (fretBuf) {
-          fretBuf = fretBuf.slice(0, -1)
-        } else if (pendingChord.length) {
-          // 退掉待输入和弦的最后一项，并把选中挪回那根弦，方便接着改
-          const last = pendingChord[pendingChord.length - 1]
-          pendingChord = pendingChord.slice(0, -1)
-          tabPick = { bar: tabPick.bar, string: last.string }
-        } else {
-          // 待输入的全退完了，才取消选中。**不碰已经落谱的音符** ✓
-          tabPick = null
-        }
+        padBackspace()
         e.preventDefault()
         return
       }
@@ -2102,7 +2197,7 @@ let detectStats = $state({
     const pt = canvasPoint(e)
     if (!pt) return
 
-    const hit = staffHitTest(pt.x, pt.y)
+    const hit = staffHitTest(pt.x, pt.y, HIT_SLACK)
     if (hit) {
       selAnchor = hit
       selFocus = hit
@@ -2115,7 +2210,7 @@ let detectStats = $state({
     // 没点到符头：清掉选区，按原来的逻辑选弦
     clearSel()
     if (notationMode === 'both') return
-    const s = tabStringAt(pt.y, RHYTHM_H, notationMode)
+    const s = tabStringAt(pt.y, RHYTHM_H, notationMode, STRING_SLACK)
     if (s === null) {
       tabPick = null
       fretBuf = ''
@@ -2711,6 +2806,12 @@ function entryValue(): number {
       keySignature = Math.max(-7, Math.min(7, Number(wantFifths)))
     }
 
+    // ★ 默认谱子 ✓
+    //   ?score=53231323 -> **强制**载入（分享 / 验证用 ✓）
+    //   没写这个参数     -> 只在**本地没有草稿**时当默认谱子载入 ✓✓
+    const wantScore = params.get('score')
+    void loadDefaultScore(wantScore === '53231323' || wantScore === 'default')
+
     resize()
     window.addEventListener('resize', resize)
     window.addEventListener('keydown', onKeyDown)
@@ -2887,6 +2988,70 @@ function entryValue(): number {
       </div>
     {/if}
   {/snippet}
+
+  <!--
+    ★★ 手机录谱用的**数字板** ★★
+
+    用户要求做"手机输入六线谱的第一步" ✓ 范围是：
+      · 数字板（替掉软键盘）✓
+      · 触屏判定放宽 ✓（见 HIT_SLACK / STRING_SLACK ✓）
+      · 能删能撤 ✓
+    **不动数据模型** ✗ —— tabPick / fretBuf / pendingChord 还是原来那套 ✓
+    只是把入口分成两个：桌面走键盘 ✓ 手机点这里 ✓✓
+    而且两边调的是**同一批函数**（padAddFret / padCommitString / padBackspace / padCancel）✓✓
+    所以不可能出现"手机上对、键盘上错"这种偏差 ✓
+
+    为什么要有它 ✗：手机没有物理键盘 ✓ 而软键盘一弹就遮住半个屏幕 ✓
+    你要**一边看着谱子一边输** ✓ 所以数字必须在屏幕上 ✓✓
+
+    点一下就落一个音 ✓（等于键盘上"敲数字 + 空格"两下 ✓）
+    再点别的弦继续加 ✓ 和弦攒够了按「落谱」✓
+  -->
+  {#if isCoarse && tab === 'score' && tabPick}
+    <div class="pad" role="group" aria-label="六线谱数字板">
+      <div class="pad-head">
+        <b>第 {tabPick.string} 弦</b>
+        <span>第 {tabPick.bar + 1} 小节</span>
+        {#if fretBuf !== ''}
+          <span class="pad-buf">待输入 {fretBuf}</span>
+        {:else if pendingChord.length}
+          <span class="pad-buf">
+            和弦 {pendingChord.map((p) => p.string + '弦' + p.fret + '品').join(' + ')}
+          </span>
+        {:else}
+          <span>点数字落一个音</span>
+        {/if}
+      </div>
+      <div class="pad-grid">
+        {#each ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9'] as d (d)}
+          <button
+            type="button"
+            class="pad-key"
+            onclick={() => {
+              padAddFret(d)
+              padCommitString()
+            }}>{d}</button
+          >
+        {/each}
+        {#each ['10', '12', '14', '15', '17'] as d (d)}
+          <button
+            type="button"
+            class="pad-key pad-key-2"
+            onclick={() => {
+              padAddFret(d[0])
+              padAddFret(d[1])
+              padCommitString()
+            }}>{d}</button
+          >
+        {/each}
+        <button type="button" class="pad-key pad-act" onclick={padBackspace}>⌫ 删</button>
+        <button type="button" class="pad-key pad-act pad-go" onclick={commitFret}>⏎ 落谱</button>
+        <button type="button" class="pad-key pad-act" onclick={padCancel}>✕ 取消</button>
+      </div>
+    </div>
+    <!-- 数字板是固定在下半屏的 ✓ 这里垫一块占位，免得它盖住谱面末尾的内容 ✗ -->
+    <div class="pad-spacer" aria-hidden="true"></div>
+  {/if}
 
   <div class="tabpane" class:active={tab === 'record'}>
   {@render playbar()}
@@ -4360,7 +4525,16 @@ input[type=range]::-moz-range-thumb {
   background:var(--badge-bg);
   border-radius:8px;
   margin:0 0 10px;
-  padding:9px 12px}
+  padding:9px 12px;
+  /* ★ 必须能换行 ✗✗
+     里面那一串 <span> 是**紧挨着**生成的 ✓ 中间没有空格 ✓
+     而浏览器**只在有空格的地方**换行 ✓ 所以整行被当成一个不可断的长条 ✗
+     七组「A→A4」排下来就把页面撑到 572px ✓ 手机上会横向滚动 ✓（实测逮到的 ✓）
+     flex-wrap 让每个 span 成为独立的 flex 项 ✓ 它们之间就可以换行了 ✓✓ */
+  align-items:center;
+  gap:1px 0;
+  display:flex;
+  flex-wrap:wrap}
 .octave-now b {
   color:var(--accent-2)}
 .pk {
@@ -4570,6 +4744,76 @@ input[type=range]::-moz-range-thumb {
 .rep-chip i {
   color:var(--muted-2);
   font-style:normal}
+/* ---------------- 手机录谱数字板 ---------------- */
+/*
+ * 尺寸按 Apple/Google 的建议：可点目标 >= 44px ✓ 这里给到 56px ✓
+ * touch-action: manipulation 关掉"双击缩放" ✗ 否则连点数字会被当成双击 ✓
+ * 面板固定在下半屏 ✓ 拇指够得到 ✓
+ */
+.pad {
+  /* ★ 必须 border-box ✗✗
+     第一版漏了它 ✓ 于是宽度 = 100% + 左右 padding 20px ✓
+     比视口宽出 20px ✓ 第 5 列被挤出屏幕 ✗（截图里看得一清二楚 ✓）*/
+  box-sizing:border-box;
+  z-index:60;
+  position:fixed;
+  left:0;
+  right:0;
+  bottom:0;
+  background:var(--panel);
+  border-top:2px solid var(--accent);
+  box-shadow:0 -6px 24px #0003;
+  padding:8px 10px 14px;
+  touch-action:manipulation}
+.pad-head {
+  align-items:baseline;
+  gap:10px;
+  margin-bottom:8px;
+  font:12px var(--mono);
+  color:var(--muted);
+  display:flex;
+  flex-wrap:wrap}
+.pad-head b {
+  color:var(--accent);
+  font-size:15px}
+.pad-buf {
+  color:var(--text)}
+.pad-grid {
+  gap:8px;
+  display:grid;
+  grid-template-columns:repeat(5, 1fr)}
+.pad-key {
+  min-height:56px;
+  cursor:pointer;
+  touch-action:manipulation;
+  -webkit-user-select:none;
+  user-select:none;
+  color:var(--text);
+  background:var(--panel-2);
+  border:1px solid var(--line);
+  border-radius:10px;
+  font:600 20px var(--mono)}
+.pad-key:active {
+  background:var(--btn-on);
+  border-color:var(--accent)}
+.pad-key-2 {
+  font-size:17px}
+.pad-act {
+  font-size:14px}
+.pad-go {
+  color:var(--accent);
+  border-color:var(--accent)}
+.pad-spacer {
+  height:220px}
+/* 手指操作时：时值按钮、下拉框这些也放大一档 ✓ */
+@media (pointer: coarse) {
+  .note-btn {
+    min-width:56px;
+    min-height:48px}
+  button, select, input[type=range] {
+    touch-action:manipulation}
+}
+
 .start-chip {
   border:1px solid var(--ok);
   background:var(--panel-2);
