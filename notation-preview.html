@@ -1,0 +1,70 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>节奏记谱预览</title>
+<body style="margin:0;background:#07070c;color:#8f8fa6;font:12px system-ui">
+<div id="out"></div>
+<script type="module">
+import { makeNote, checkBars } from '/src/lib/notation/rhythm.ts'
+import { renderRhythm } from '/src/lib/notation/render.ts'
+
+const q = (d) => makeNote('quarter', { dotted: d })
+const e = (d) => makeNote('eighth', { dotted: d })
+const h = (d) => makeNote('half', { dotted: d })
+const w = (d) => makeNote('whole', { dotted: d })
+const s = (d) => makeNote('sixteenth', { dotted: d })
+const rest = (id) => makeNote(id, { rest: true })
+
+const CASES = [
+  {
+    title: '① 4/4 弱起：第 1 小节只有 1 拍（允许）· 后两小节满',
+    beatsPerBar: 4, beatUnit: 4,
+    bars: [[q()], [q(), q(), q(), q()], [h(), q(), e(), e()]]
+  },
+  {
+    title: '② 4/4 出错：第 2 小节差半拍（标红）',
+    beatsPerBar: 4, beatUnit: 4,
+    bars: [[q(true), e(), e()], [h(), q()], [w()]]
+  },
+  {
+    title: '③ 6/8（一小节 = 3 个四分）：三小节全满',
+    beatsPerBar: 6, beatUnit: 8,
+    bars: [[q(), q(), q()], [q(true), e(), e(), e()], [q(), q(), rest('quarter')]]
+  }
+]
+
+const W = 900
+const H = 250
+const out = document.getElementById('out')
+const statuses = []
+
+for (const c of CASES) {
+  const t = document.createElement('div')
+  t.textContent = c.title
+  t.style.cssText = 'padding:10px 14px 0'
+  out.appendChild(t)
+
+  const checks = checkBars(c.bars, c.beatsPerBar, c.beatUnit)
+  statuses.push(checks.map((x) => x.status).join(','))
+
+  const cv = document.createElement('canvas')
+  const dpr = window.devicePixelRatio || 1
+  cv.width = W * dpr
+  cv.height = H * dpr
+  cv.style.cssText = 'display:block;width:' + W + 'px;height:' + H + 'px;margin:6px auto'
+  out.appendChild(cv)
+
+  const ctx = cv.getContext('2d')
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+  renderRhythm({
+    ctx, width: W, height: H,
+    bars: c.bars, beatsPerBar: c.beatsPerBar, beatUnit: c.beatUnit,
+    checks, mode: 'both'
+  })
+
+  const m = document.createElement('div')
+  m.textContent = checks.map((x) => x.message).join('　|　')
+  m.style.cssText = 'padding:0 14px 10px;color:' + (checks.every((x) => x.status === 'ok' || x.status === 'pickup') ? '#6ee7b7' : '#f87171')
+  out.appendChild(m)
+}
+document.title = 'ready::' + statuses.join(' / ')
+</script>

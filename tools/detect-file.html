@@ -1,0 +1,313 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>init</title>
+<body style="background:#07070c;color:#cfcfe0;font:12px/1.6 ui-monospace,Consolas,monospace">
+<pre id="out" style="padding:12px;white-space:pre-wrap"></pre>
+<script>
+window.addEventListener('error', (e) => { document.title = 'ERR::' + (e.message || e.type) })
+</script>
+<script type="module">
+import { analyseAudioBuffer } from '/src/lib/audioFile.ts'
+import { detectOnsetsWithNotes, expectedOnsets, patternBeats, matchTempo } from '/src/lib/onset.ts'
+import { foldEnvelope, pickFoldEvents, foldEventTimes, findLoopPeriod } from '/src/lib/loop.ts'
+import { makeNote } from '/src/lib/notation/rhythm.ts'
+
+const p = new URLSearchParams(location.search)
+const file = p.get('file')
+const rhythmSpec = p.get('bars') || 'q|qqqq|hqee'
+const lines = []
+const say = (s) => { lines.push(s); document.getElementById('out').textContent = lines.join('\n') }
+
+/** 节奏串 -> 三小节。q/e/s/h/w 是音符，大写是休止，后面跟 . 是附点 */
+const LETTER = { q: 'quarter', e: 'eighth', s: 'sixteenth', h: 'half', w: 'whole' }
+function parseBars(spec) {
+  return spec.split('|').map((bar) => {
+    const notes = []
+    for (let i = 0; i < bar.length; i++) {
+      const ch = bar[i]
+      const id = LETTER[ch.toLowerCase()]
+      if (!id) continue
+      const dotted = bar[i + 1] === '.'
+      if (dotted) i++
+      notes.push(makeNote(id, { dotted, rest: ch === ch.toUpperCase() }))
+    }
+    return notes
+  })
+}
+
+try {
+  const resp = await fetch(file)
+  const bytes = await resp.arrayBuffer()
+  say('文件      ' + decodeURIComponent(file))
+  say('大小      ' + bytes.byteLength + ' 字节')
+
+  const ctx = new OfflineAudioContext(1, 1, 48000)
+  const buf = await ctx.decodeAudioData(bytes.slice(0))
+  say('解码      ' + buf.duration.toFixed(3) + 's  ' + buf.sampleRate + 'Hz  ' + buf.numberOfChannels + 'ch')
+
+  const a = await analyseAudioBuffer(buf, 'probe')
+  say('分析      ' + a.columns + ' 列  频带 ' + a.bands.length + ' 条')
+  say('')
+
+  // 总能量曲线：前 40 秒按 0.5 秒一格打印平均 dB，先看整体形状
+  const rate = a.log.rate
+  const n = a.log.length
+  let peak = 0
+  for (let i = 0; i < n; i++) if (a.log.at(i) > peak) peak = a.log.at(i)
+  say('总能量轮廓（每 0.5 秒一格，相对整段峰值 dB）:')
+  const per = Math.max(1, Math.round(rate * 0.2))
+  let row = ''
+  for (let i = 0; i < n; i += per) {
+    let m = 0
+    for (let k = i; k < Math.min(n, i + per); k++) if (a.log.at(k) > m) m = a.log.at(k)
+    const db = m > 0 ? 10 * Math.log10(m / peak) : -99
+    row += (i / rate).toFixed(1).padStart(6) + 's:' + db.toFixed(0).padStart(5) + '  '
+    if (row.length > 100) { say('  ' + row); row = '' }
+  }
+  if (row) say('  ' + row)
+  say('')
+
+  const energies = new Float32Array(n)
+  for (let i = 0; i < n; i++) energies[i] = a.log.at(i)
+  const dbByBand = a.bands.map((_, i) => a.noteLog.bandSeries(i))
+  // 只在 URL 明确给了参数时才传，否则用库里的默认值 ——
+  // 这样这个工具永远反映 App 真实的行为（之前写死过 bandMinJumpDb=4，把库默认值盖掉了）
+  const tune = {}
+  const put = (key, name) => { if (p.get(key) !== null) tune[name] = Number(p.get(key)) }
+  put('bj', 'bandMinJumpDb')
+  put('nr', 'noteRiseDb')
+  put('mb', 'minBands')
+  put('pm', 'peakMarginDb')
+  put('lm', 'levelMarginDb')
+  put('em', 'envMinJumpDb')
+  put('mg', 'minGapSeconds')
+  put('no', 'noveltyOrder')
+  say('阈值: ' + JSON.stringify(tune))
+  say('')
+  // 触发用锯齿窗那一路，认音名用汉宁窗的频带
+  const onsets = detectOnsetsWithNotes(dbByBand, a.bands, rate, {
+    ...tune,
+    triggerEnergies: a.onsetLog.length > 0 ? (() => {
+      const e = new Float32Array(a.onsetLog.length)
+      for (let i = 0; i < e.length; i++) e[i] = a.onsetLog.at(i)
+      return e
+    })() : null
+  })
+
+  say('检测到 ' + onsets.length + ' 个起点:')
+  for (const o of onsets) {
+    say(
+      '  ' + o.time.toFixed(3).padStart(7) + 's   ' +
+      (o.note ? o.note.label.padEnd(8) : '—'.padEnd(8)) +
+      ' 抬升 ' + o.strengthDb.toFixed(1).padStart(5) + 'dB' +
+      '  带宽 ' + String(o.bandCount).padStart(2) + ' 条'
+    )
+  }
+  say('')
+
+  // ?sweep=1 : 对一组阈值组合各跑一遍，只报起点数 —— 在真实录音上找合适参数用
+  if (p.get('sweep')) {
+    say('参数扫描：每组报起点数')
+    say('目标：47 个音。levelBack = 起音前的对比窗口(秒)；sustainDb = 要比起音前高多少 dB')
+    say('')
+    const runs = []
+    const trig = a.onsetLog.length > 0 ? (() => {
+      const e = new Float32Array(a.onsetLog.length)
+      for (let i = 0; i < e.length; i++) e[i] = a.onsetLog.at(i)
+      return e
+    })() : null
+    // 先看：按强度排序后，前 47 个（真音数）的强度门槛在哪
+    const byStrength = onsets.slice().sort((x, y) => y.strengthDb - x.strengthDb)
+    if (byStrength.length >= 47) {
+      say('按强度降序，第 47 个的强度 = ' + byStrength[46].strengthDb.toFixed(1) + ' dB')
+      say('强度 >= 该值的起点共 ' + byStrength.filter((x) => x.strengthDb >= byStrength[46].strengthDb).length + ' 个')
+      say('')
+      const keep = byStrength.slice(0, 47).sort((x, y) => x.time - y.time)
+      const gaps = []
+      for (let i = 1; i < keep.length; i++) gaps.push(keep[i].time - keep[i - 1].time)
+      gaps.sort((x, y) => x - y)
+      say('这 47 个若按时间排开，间隔中位数 = ' + gaps[Math.floor(gaps.length / 2)].toFixed(3) + 's')
+      say('  最短 ' + gaps[0].toFixed(3) + 's   最长 ' + gaps[gaps.length - 1].toFixed(3) + 's')
+      say('  间隔序列前 20 个: ' + gaps.slice(0, 20).map((g) => g.toFixed(2)).join(' '))
+      say('')
+    }
+    say('目标 47。一阶差分 vs 二阶差分（斜率变化），各扫最小跳变')
+    for (const no of [1, 2]) {
+      let row = 'order=' + no
+      for (const em of [0.5, 1, 2, 4, 8, 16]) {
+        const r = detectOnsetsWithNotes(dbByBand, a.bands, rate, {
+          noveltyOrder: no,
+          envMinJumpDb: em,
+          levelBackSeconds: 0.2,
+          triggerEnergies: trig
+        })
+        runs.push({ no, em, n: r.length })
+        row += '   jump=' + String(em).padStart(4) + ':' + String(r.length).padStart(4)
+      }
+      say(row)
+    }
+    say('')
+    for (const lb of [0.2]) {
+      let row = 'levelBack=' + lb.toFixed(2)
+      for (const sd of [2, 4, 6, 8]) {
+        const r = detectOnsetsWithNotes(dbByBand, a.bands, rate, {
+          levelBackSeconds: lb,
+          sustainDb: sd,
+          triggerEnergies: trig
+        })
+        runs.push({ lb, sd, n: r.length })
+        row += '   sustainDb=' + String(sd) + ':' + String(r.length).padStart(4)
+      }
+      say(row)
+    }
+    say('')
+    say('参考：你这 26 秒大概弹了多少个音？找最接近那一档。')
+  }
+
+  // ?fold=6.74 : 把能量包络按这个周期折叠、跨遍平均。
+  // 真事件在每一遍的同一相位都出现 -> 平均后叠加放大；
+  // 泛音拍频的相位和弹奏无关 -> 平均后互相抵消。
+  if (p.get('fold')) {
+    let P = Number(p.get('fold'))
+    // fold=auto：先按普通办法检出起点，从起点时刻里自动搜周期
+    if (p.get('fold') === 'auto') {
+      const trig0 = a.onsetLog.length > 0 ? (() => {
+        const e = new Float32Array(a.onsetLog.length)
+        for (let i = 0; i < e.length; i++) e[i] = a.onsetLog.at(i)
+        return e
+      })() : null
+      const probe = detectOnsetsWithNotes(a.bands.map((_, i) => a.noteLog.bandSeries(i)), a.bands, rate, {
+        triggerEnergies: trig0
+      })
+      const info = findLoopPeriod(probe.map((o) => o.time))
+      if (!info) { say('自动定周期失败（起点太少）'); P = 0 }
+      else {
+        P = info.period
+        say('自动定周期：' + P.toFixed(3) + 's   聚集度 ' + info.score.toFixed(2) +
+            '   覆盖 ' + info.laps.toFixed(2) + ' 遍')
+      }
+    }
+    // 跑真正的算法：折叠平均 -> 找事件 -> 展开成绝对时刻
+    if (a.onsetLog.length > 0) {
+      const trig = new Float64Array(a.onsetLog.length)
+      for (let i = 0; i < trig.length; i++) trig[i] = a.onsetLog.at(i)
+      const f = foldEnvelope(trig, rate, P)
+      if (f) {
+        const ec = p.get('ec') ? Number(p.get('ec')) : undefined
+        const evs = pickFoldEvents(f, { expectedCount: ec })
+        const ts = foldEventTimes(f, evs)
+        say('=== 正式算法 ===')
+        say('折叠：' + f.bins + ' 列/遍   完整 ' + f.laps + ' 遍' + (ec ? '   期望事件数 ' + ec : ''))
+        say('找到 ' + evs.length + ' 个事件：' + evs.map((e) => e.phase.toFixed(3) + 's/' + e.riseDb.toFixed(1) + 'dB').join('  '))
+        say('展开出 ' + ts.length + ' 个绝对时刻')
+        say('')
+      } else {
+        say('=== 正式算法：折叠失败（完整遍不足 2）===')
+        say('')
+      }
+    }
+    const bins = Math.max(2, Math.round(P * rate))
+    let src = null
+    if (a.onsetLog.length > 0) {
+      src = new Float64Array(a.onsetLog.length)
+      for (let i = 0; i < src.length; i++) src[i] = a.onsetLog.at(i)
+    }
+    if (src) {
+      const laps = src.length / bins
+      const full = Math.floor(laps)
+      say('周期 ' + P.toFixed(3) + 's   列数 ' + src.length + '   完整遍数 ' + full +
+          '   余下 ' + (src.length - full * bins) + ' 列（不参与，避免某相位样本数偏少）')
+      say('')
+      const sum = new Float64Array(bins)
+      const cnt = new Int32Array(bins)
+      for (let i = 0; i < full * bins; i++) {
+        const b = i % bins
+        sum[b] += src[i]
+        cnt[b]++
+      }
+      const avg = new Float64Array(bins)
+      let peak = 0
+      for (let b = 0; b < bins; b++) {
+        avg[b] = cnt[b] > 0 ? sum[b] / cnt[b] : 0
+        if (avg[b] > peak) peak = avg[b]
+      }
+      const toDb = (v) => 10 * Math.log10(v / peak + 1e-12)
+
+      // 逐列打印折叠后的平均包络（dB，相对峰值）
+      say('折叠后的平均包络（每格 0.1s，相对该周期峰值 dB）：')
+      const stepCols = Math.max(1, Math.round(0.1 * rate))
+      let row = '  '
+      for (let b = 0; b < bins; b += stepCols) {
+        row += (b / rate).toFixed(1).padStart(6) + 's:' + toDb(avg[b]).toFixed(0).padStart(5) + '  '
+        if (row.length > 150) { say(row); row = '  ' }
+      }
+      if (row.trim()) say(row)
+
+      // 找上升沿：相邻窗口差值最大的那些位置
+      say('')
+      say('折叠包络上的上升沿（窗口 0.12s，取前 20 个）：')
+      const w = Math.max(2, Math.round(0.12 * rate))
+      const rises = []
+      for (let b = w; b < bins - w; b++) {
+        let pre = 0
+        let post = 0
+        for (let k = 1; k <= w; k++) { pre += avg[b - k]; post += avg[b + k] }
+        if (pre > 0) rises.push({ b, db: 10 * Math.log10((post / pre) + 1e-12) })
+      }
+      rises.sort((x, y) => y.db - x.db)
+      const picked = []
+      for (const r of rises) {
+        if (picked.every((q) => Math.abs(q.b - r.b) > Math.round(0.2 * rate))) picked.push(r)
+        if (picked.length >= 20) break
+      }
+      picked.sort((x, y) => x.b - y.b)
+      for (const r of picked) {
+        say('  相位 ' + (r.b / rate).toFixed(3) + 's   上升 ' + r.db.toFixed(1) + 'dB')
+      }
+      say('')
+      say('共 ' + picked.length + ' 个（一遍里应该有 9 个事件）')
+    }
+  }
+
+  const bars = parseBars(rhythmSpec)
+  const expected = expectedOnsets(bars)
+  say('节奏      ' + rhythmSpec + '  -> ' + expected.length + ' 个期望音，位置 ' + expected.join(','))
+  // 按遍重复搜索：练习录音里同一段会反复弹。
+  // 只拿一遍的期望音去对，拟合只能找个很慢的速度把 9 个期望音摊满全程。
+  const times = onsets.map((o) => o.time)
+  const strs = onsets.map((o) => o.strengthDb)
+  const periodQ = patternBeats(bars)
+  const span = times.length ? times[times.length - 1] - times[0] : 0
+  const maxRep = Math.max(1, Math.min(16, Math.ceil(span / Math.max(periodQ * 1.5, 0.5)) + 1))
+  const repTable = []
+  let m = null
+  let bestRep = 1
+  for (let rep = 1; rep <= maxRep; rep++) {
+    const exp = expectedOnsets(bars, rep)
+    if (exp.length === 0) break
+    const r = matchTempo(times, exp, { strengths: strs })
+    if (!r) continue
+    repTable.push({ rep, bpm: r.bpm, f1: r.f1, matches: r.matches, expected: r.expectedCount, extras: r.extras.length })
+    if (!m || r.f1 > m.f1 + 1e-9) { m = r; bestRep = rep }
+  }
+  say('=== 按遍重复搜索（一遍时值 ' + periodQ + ' 拍）===')
+  for (const r of repTable) {
+    say('  弹 ' + String(r.rep).padStart(2) + ' 遍: 速度 ' + r.bpm.toFixed(1).padStart(6) +
+        ' BPM   F1=' + r.f1.toFixed(3) + '   对上 ' + r.matches + '/' + r.expected +
+        '   多打 ' + String(r.extras).padStart(3) + (r.rep === bestRep ? '   ← 最优' : ''))
+  }
+  say('')
+  if (m) {
+    say('实测速度  ' + m.bpm.toFixed(2) + ' BPM   第一个音在 ' + m.offset.toFixed(3) + 's')
+    say('匹配      ' + m.matches + '/' + m.expectedCount + '  多打 ' + m.extras.length +
+        '  平均偏差 ' + (m.meanAbsError * 1000).toFixed(0) + 'ms')
+    const status = m.pairs.map((x) => (x.detected === null ? '✗' : (x.error * 1000 > 30 ? '晚' : x.error * 1000 < -30 ? '早' : '·'))).join('')
+    say('每个音    ' + status)
+  } else {
+    say('匹配      失败')
+  }
+} catch (e) {
+  say('出错: ' + (e && e.message ? e.message : e))
+}
+document.title = 'ready::onsets=' + lines.filter((l) => l.includes('s   ')).length
+</script>

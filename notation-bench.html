@@ -1,0 +1,172 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>bench</title>
+<style>#host{font:16px/1 system-ui;position:relative}</style>
+<body>
+<div id="host"></div>
+<script>
+const N = 2000;
+const host = document.getElementById('host');
+const out = {};
+function now(){ return performance.now(); }
+
+// ---- one quarter note as a reusable sprite bitmap (offscreen) ----
+const S = 32;
+const sc = document.createElement('canvas');
+sc.width = sc.height = S;
+const sx = sc.getContext('2d');
+(function drawSprite(){
+  const ox = 8, oy = 22;
+  sx.save();
+  sx.translate(ox, oy); sx.rotate(-0.35);
+  sx.beginPath(); sx.ellipse(0, 0, 6, 4.2, 0, 0, Math.PI*2); sx.fill();
+  sx.restore();
+  sx.fillRect(ox+5, oy-15, 1.6, 16);          // stem
+  sx.beginPath();                              // flag
+  sx.moveTo(ox+6.6, oy-15);
+  sx.quadraticCurveTo(ox+14, oy-9, ox+6.6, oy+1);
+  sx.quadraticCurveTo(ox+10, oy-8, ox+6.6, oy-15);
+  sx.fill();
+})();
+const spriteURL = sc.toDataURL('image/png');
+const variants = [];
+for (let i = 0; i < 20; i++) {                 // 20 distinct bitmaps = "many files" analogue
+  const c = document.createElement('canvas'); c.width = c.height = S;
+  const x = c.getContext('2d');
+  x.drawImage(sc, 0, 0); x.globalAlpha = 0.9 + i * 0.004; x.fillStyle = '#000';
+  x.fillRect(0, 0, 1, 1); x.globalAlpha = 1;
+  variants.push(c.toDataURL('image/png'));
+}
+
+function measure(label, fn, forceRaster){
+  const t0 = now();
+  fn();
+  const t1 = now();
+  if (host.firstElementChild) host.firstElementChild.getBoundingClientRect();
+  const t2 = now();
+  if (forceRaster) forceRaster();
+  const t3 = now();
+  out[label] = { build: +(t1-t0).toFixed(1), layout: +(t2-t1).toFixed(1), raster: +(t3-t2).toFixed(1) };
+  if (performance.memory) out[label].heapMB = +(performance.memory.usedJSHeapSize/1048576).toFixed(1);
+  host.innerHTML = '';
+}
+
+// 1) SVG, N <use> of one shared <symbol>-style group
+measure('svgUse', function(){
+  const ns = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(ns, 'svg');
+  svg.setAttribute('width', '1200'); svg.setAttribute('height', 40 * Math.ceil(N/50));
+  const defs = document.createElementNS(ns, 'defs');
+  const g = document.createElementNS(ns, 'g'); g.setAttribute('id', 'q');
+  const el = document.createElementNS(ns, 'ellipse');
+  el.setAttribute('cx','8'); el.setAttribute('cy','22'); el.setAttribute('rx','6'); el.setAttribute('ry','4.2');
+  const st = document.createElementNS(ns, 'rect');
+  st.setAttribute('x','13'); st.setAttribute('y','7'); st.setAttribute('width','1.6'); st.setAttribute('height','16');
+  g.appendChild(el); g.appendChild(st); defs.appendChild(g); svg.appendChild(defs);
+  for (let i = 0; i < N; i++) {
+    const u = document.createElementNS(ns, 'use');
+    u.setAttribute('href', '#q');
+    u.setAttribute('x', (i % 50) * 24); u.setAttribute('y', Math.floor(i/50) * 40);
+    svg.appendChild(u);
+  }
+  host.appendChild(svg);
+});
+
+// 2) SVG with 3 full nodes per note (worst-case DOM)
+measure('svgNodes', function(){
+  const ns = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(ns, 'svg');
+  svg.setAttribute('width','1200'); svg.setAttribute('height', 40*Math.ceil(N/50));
+  for (let i = 0; i < N; i++) {
+    const gg = document.createElementNS(ns, 'g');
+    const e = document.createElementNS(ns,'ellipse');
+    e.setAttribute('cx','8'); e.setAttribute('cy','22'); e.setAttribute('rx','6'); e.setAttribute('ry','4.2');
+    const s = document.createElementNS(ns,'rect');
+    s.setAttribute('x','13'); s.setAttribute('y','7'); s.setAttribute('width','1.6'); s.setAttribute('height','16');
+    const p = document.createElementNS(ns,'path');
+    p.setAttribute('d','M14.6 7 q8 6 0 16 q4 -9 0 -16');
+    gg.appendChild(e); gg.appendChild(s); gg.appendChild(p); svg.appendChild(gg);
+  }
+  host.appendChild(svg);
+});
+
+// 3) Canvas 2D: vector paths per note
+measure('canvasVector', function(){
+  const cv = document.createElement('canvas');
+  cv.width = 1200; cv.height = 40*Math.ceil(N/50);
+  const x = cv.getContext('2d');
+  for (let i = 0; i < N; i++) {
+    const ox = (i % 50)*24 + 8, oy = Math.floor(i/50)*40 + 22;
+    x.save(); x.translate(ox, oy); x.rotate(-0.35);
+    x.beginPath(); x.ellipse(0,0,6,4.2,0,0,Math.PI*2); x.fill(); x.restore();
+    x.fillRect(ox+5, oy-15, 1.6, 16);
+    x.beginPath(); x.moveTo(ox+6.6, oy-15);
+    x.quadraticCurveTo(ox+14, oy-9, ox+6.6, oy+1);
+    x.quadraticCurveTo(ox+10, oy-8, ox+6.6, oy-15); x.fill();
+  }
+  host.appendChild(cv);
+}, function(){ host.querySelector('canvas').getContext('2d').getImageData(0,0,1,1); });
+
+// 4) Canvas 2D: drawImage from a sprite bitmap
+measure('canvasSprite', function(){
+  const cv = document.createElement('canvas');
+  cv.width = 1200; cv.height = 40*Math.ceil(N/50);
+  const x = cv.getContext('2d');
+  for (let i = 0; i < N; i++) {
+    x.drawImage(sc, (i % 50)*24, Math.floor(i/50)*40, S, S);
+  }
+  host.appendChild(cv);
+}, function(){ host.querySelector('canvas').getContext('2d').getImageData(0,0,1,1); });
+
+// 5) <img> all pointing at one sprite/atlas image (no network, one cache entry)
+measure('imgShared', function(){
+  const f = document.createDocumentFragment();
+  for (let i = 0; i < N; i++) {
+    const im = document.createElement('img');
+    im.src = spriteURL; im.width = S; im.height = S;
+    f.appendChild(im);
+  }
+  host.appendChild(f);
+});
+
+// 6) <img> cycling through 20 distinct bitmaps (analogue of many separate files)
+measure('imgDistinct', function(){
+  const f = document.createDocumentFragment();
+  for (let i = 0; i < N; i++) {
+    const im = document.createElement('img');
+    im.src = variants[i % 20]; im.width = S; im.height = S;
+    f.appendChild(im);
+  }
+  host.appendChild(f);
+});
+
+// 7) Unicode text: BMP note/rest chars
+measure('textBMP', function(){
+  const f = document.createDocumentFragment();
+  for (let i = 0; i < N; i++) {
+    const s = document.createElement('span');
+    s.textContent = (i % 3 === 0) ? '\u2669' : (i % 3 === 1 ? '\u266A' : '\u266D');
+    f.appendChild(s);
+  }
+  host.appendChild(f);
+});
+
+// 8) Unicode text: SMP musical symbols (font-fallback path)
+measure('textSMP', function(){
+  const f = document.createDocumentFragment();
+  const chars = ['\uD834\uDD5D','\uD834\uDD5F','\uD834\uDD60','\uD834\uDD3D'];
+  for (let i = 0; i < N; i++) {
+    const s = document.createElement('span');
+    s.textContent = chars[i % 4];
+    f.appendChild(s);
+  }
+  host.appendChild(f);
+});
+
+out.dpr = window.devicePixelRatio;
+out.N = N;
+const json = JSON.stringify(out);
+document.title = 'BENCH:' + json;
+document.body.setAttribute('data-bench', json);
+</script>
+</body>

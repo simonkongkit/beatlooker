@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<title>记谱渲染性能基准</title>
+<style>
+  body{font:13px/1.6 system-ui,"Segoe UI",sans-serif;margin:16px}
+  h1{font-size:16px}
+  table{border-collapse:collapse;margin-top:10px;font-variant-numeric:tabular-nums}
+  th,td{border:1px solid #ccc;padding:3px 8px;text-align:right}
+  th:first-child,td:first-child{text-align:left}
+  #stage{position:absolute;left:-10000px;top:0;overflow:hidden}
+  #raw{white-space:pre-wrap;font:11px/1.4 ui-monospace,Consolas,monospace;margin-top:12px;color:#444}
+</style>
+<style>.nota-atlas-xhxunv{background-image:url(data:image/png;base64,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);background-repeat:no-repeat;background-size:148px 28px}</style></head><body data-bench="{&quot;n&quot;:2000,&quot;dpr&quot;:2,&quot;vocab&quot;:[&quot;whole&quot;,&quot;half&quot;,&quot;quarter&quot;,&quot;eighth&quot;,&quot;sixteenth&quot;,&quot;restWhole&quot;,&quot;restHalf&quot;,&quot;restQuarter&quot;,&quot;restEighth&quot;,&quot;restSixteenth&quot;],&quot;results&quot;:{&quot;svg&quot;:{&quot;build&quot;:14.5,&quot;layout&quot;:9.8,&quot;raster&quot;:0,&quot;heapMB&quot;:3.1,&quot;nodes&quot;:4001,&quot;label&quot;:&quot;SVG 矢量（每形状一个 &lt;path&gt;）&quot;,&quot;buildHot&quot;:14.6,&quot;rps&quot;:38.1,&quot;frameMs&quot;:26.25},&quot;canvasVector&quot;:{&quot;build&quot;:10.5,&quot;layout&quot;:0.2,&quot;raster&quot;:14.2,&quot;heapMB&quot;:0.9,&quot;nodes&quot;:1,&quot;label&quot;:&quot;Canvas 2D 矢量路径&quot;,&quot;buildHot&quot;:10.2,&quot;rps&quot;:34.3,&quot;frameMs&quot;:29.14},&quot;canvasSprite&quot;:{&quot;build&quot;:15.2,&quot;layout&quot;:0.1,&quot;raster&quot;:18.9,&quot;heapMB&quot;:1.1,&quot;nodes&quot;:1,&quot;label&quot;:&quot;Canvas 2D 精灵位图(drawImage)&quot;,&quot;buildHot&quot;:12.6,&quot;rps&quot;:31.2,&quot;frameMs&quot;:32.09},&quot;imgPerGlyph&quot;:{&quot;build&quot;:8,&quot;layout&quot;:12,&quot;raster&quot;:0,&quot;heapMB&quot;:2,&quot;nodes&quot;:2001,&quot;label&quot;:&quot;图片：每记号一张 PNG + &lt;img&gt;&quot;,&quot;buildHot&quot;:8.2,&quot;rps&quot;:55,&quot;frameMs&quot;:18.19},&quot;cssAtlas&quot;:{&quot;build&quot;:6.1,&quot;layout&quot;:9.2,&quot;raster&quot;:0,&quot;heapMB&quot;:1.6,&quot;nodes&quot;:2001,&quot;label&quot;:&quot;图片：CSS 雪碧图 + &lt;div&gt; 背景&quot;,&quot;buildHot&quot;:5.8,&quot;rps&quot;:89.9,&quot;frameMs&quot;:11.12},&quot;textSMP&quot;:{&quot;build&quot;:0.1,&quot;layout&quot;:8.1,&quot;raster&quot;:0,&quot;heapMB&quot;:1.7,&quot;nodes&quot;:1,&quot;label&quot;:&quot;Unicode 文本：音乐符号区(U+1D100)&quot;,&quot;buildHot&quot;:0,&quot;rps&quot;:165.6,&quot;frameMs&quot;:6.04},&quot;textBMP&quot;:{&quot;build&quot;:0,&quot;layout&quot;:3.5,&quot;raster&quot;:0,&quot;heapMB&quot;:1.7,&quot;nodes&quot;:1,&quot;label&quot;:&quot;Unicode 文本：BMP ♩♪♫♬&quot;,&quot;buildHot&quot;:0.6,&quot;rps&quot;:304.4,&quot;frameMs&quot;:3.29},&quot;jianpuHTML&quot;:{&quot;build&quot;:10.1,&quot;layout&quot;:19.1,&quot;raster&quot;:0,&quot;heapMB&quot;:1.9,&quot;nodes&quot;:5229,&quot;label&quot;:&quot;简谱：文本 + CSS&quot;,&quot;buildHot&quot;:8.6,&quot;rps&quot;:34.2,&quot;frameMs&quot;:29.26},&quot;jianpuSVG&quot;:{&quot;build&quot;:8.5,&quot;layout&quot;:17.2,&quot;raster&quot;:0,&quot;heapMB&quot;:1.9,&quot;nodes&quot;:3229,&quot;label&quot;:&quot;简谱：SVG text/rect/circle&quot;,&quot;buildHot&quot;:8,&quot;rps&quot;:39.1,&quot;frameMs&quot;:25.56}},&quot;errors&quot;:[],&quot;layout&quot;:{&quot;width&quot;:1560.0000000000002,&quot;height&quot;:1800,&quot;size&quot;:6,&quot;perRow&quot;:50,&quot;rows&quot;:40},&quot;canvasMP&quot;:11.2,&quot;atlasMs&quot;:1.8,&quot;unicodeCoverage&quot;:{&quot;U+1D15D 全音符&quot;:{&quot;w&quot;:33.6,&quot;ok&quot;:true},&quot;U+1D15F 四分音符&quot;:{&quot;w&quot;:31.4,&quot;ok&quot;:true},&quot;U+1D13D 四分休止符&quot;:{&quot;w&quot;:27.8,&quot;ok&quot;:true},&quot;U+2669 ♩ (BMP)&quot;:{&quot;w&quot;:80,&quot;ok&quot;:true},&quot;notdef 参照 U+FFFF&quot;:{&quot;w&quot;:55.8},&quot;fontUsed&quot;:&quot;system-ui, \&quot;Segoe UI\&quot;, sans-serif&quot;}}">
+<h1>简谱 / 五线谱记号渲染性能基准</h1>
+<p id="meta">音符数 N=2000　devicePixelRatio=2　布局 1560.0000000000002×1800px　图集预光栅化 1.8ms</p>
+<div id="stage"></div>
+<div id="report"><table><tbody><tr><th>画法</th><th>首次构建 ms</th><th>热缓存构建 ms</th><th>平均构建 ms</th><th>强制布局 ms</th><th>光栅化 ms</th><th>DOM 节点</th><th>JS 堆 MB</th><th>整谱重绘 ms</th><th>重绘/秒</th></tr><tr><td>SVG 矢量（每形状一个 <path>）</path></td><td>14.5</td><td>14.6</td><td>14.6</td><td>9.8</td><td></td><td>4001</td><td>3.1</td><td>26.25</td><td>38.1</td></tr><tr><td>Canvas 2D 矢量路径</td><td>10.5</td><td>10.2</td><td>10.3</td><td>0.2</td><td>14.2</td><td>1</td><td>0.9</td><td>29.14</td><td>34.3</td></tr><tr><td>Canvas 2D 精灵位图(drawImage)</td><td>15.2</td><td>12.6</td><td>13.9</td><td>0.1</td><td>18.9</td><td>1</td><td>1.1</td><td>32.09</td><td>31.2</td></tr><tr><td>图片：每记号一张 PNG + <img></td><td>8</td><td>8.2</td><td>8.1</td><td>12</td><td></td><td>2001</td><td>2</td><td>18.19</td><td>55</td></tr><tr><td>图片：CSS 雪碧图 + <div> 背景</div></td><td>6.1</td><td>5.8</td><td>5.9</td><td>9.2</td><td></td><td>2001</td><td>1.6</td><td>11.12</td><td>89.9</td></tr><tr><td>Unicode 文本：音乐符号区(U+1D100)</td><td>0.1</td><td></td><td>0.1</td><td>8.1</td><td></td><td>1</td><td>1.7</td><td>6.04</td><td>165.6</td></tr><tr><td>Unicode 文本：BMP ♩♪♫♬</td><td></td><td>0.6</td><td></td><td>3.5</td><td></td><td>1</td><td>1.7</td><td>3.29</td><td>304.4</td></tr><tr><td>简谱：文本 + CSS</td><td>10.1</td><td>8.6</td><td>9.3</td><td>19.1</td><td></td><td>5229</td><td>1.9</td><td>29.26</td><td>34.2</td></tr><tr><td>简谱：SVG text/rect/circle</td><td>8.5</td><td>8</td><td>8.3</td><td>17.2</td><td></td><td>3229</td><td>1.9</td><td>25.56</td><td>39.1</td></tr></tbody></table></div>
+<pre id="raw">{
+ "n": 2000,
+ "dpr": 2,
+ "vocab": [
+  "whole",
+  "half",
+  "quarter",
+  "eighth",
+  "sixteenth",
+  "restWhole",
+  "restHalf",
+  "restQuarter",
+  "restEighth",
+  "restSixteenth"
+ ],
+ "results": {
+  "svg": {
+   "build": 14.5,
+   "layout": 9.8,
+   "raster": 0,
+   "heapMB": 3.1,
+   "nodes": 4001,
+   "label": "SVG 矢量（每形状一个 &lt;path&gt;）",
+   "buildHot": 14.6,
+   "rps": 38.1,
+   "frameMs": 26.25
+  },
+  "canvasVector": {
+   "build": 10.5,
+   "layout": 0.2,
+   "raster": 14.2,
+   "heapMB": 0.9,
+   "nodes": 1,
+   "label": "Canvas 2D 矢量路径",
+   "buildHot": 10.2,
+   "rps": 34.3,
+   "frameMs": 29.14
+  },
+  "canvasSprite": {
+   "build": 15.2,
+   "layout": 0.1,
+   "raster": 18.9,
+   "heapMB": 1.1,
+   "nodes": 1,
+   "label": "Canvas 2D 精灵位图(drawImage)",
+   "buildHot": 12.6,
+   "rps": 31.2,
+   "frameMs": 32.09
+  },
+  "imgPerGlyph": {
+   "build": 8,
+   "layout": 12,
+   "raster": 0,
+   "heapMB": 2,
+   "nodes": 2001,
+   "label": "图片：每记号一张 PNG + &lt;img&gt;",
+   "buildHot": 8.2,
+   "rps": 55,
+   "frameMs": 18.19
+  },
+  "cssAtlas": {
+   "build": 6.1,
+   "layout": 9.2,
+   "raster": 0,
+   "heapMB": 1.6,
+   "nodes": 2001,
+   "label": "图片：CSS 雪碧图 + &lt;div&gt; 背景",
+   "buildHot": 5.8,
+   "rps": 89.9,
+   "frameMs": 11.12
+  },
+  "textSMP": {
+   "build": 0.1,
+   "layout": 8.1,
+   "raster": 0,
+   "heapMB": 1.7,
+   "nodes": 1,
+   "label": "Unicode 文本：音乐符号区(U+1D100)",
+   "buildHot": 0,
+   "rps": 165.6,
+   "frameMs": 6.04
+  },
+  "textBMP": {
+   "build": 0,
+   "layout": 3.5,
+   "raster": 0,
+   "heapMB": 1.7,
+   "nodes": 1,
+   "label": "Unicode 文本：BMP ♩♪♫♬",
+   "buildHot": 0.6,
+   "rps": 304.4,
+   "frameMs": 3.29
+  },
+  "jianpuHTML": {
+   "build": 10.1,
+   "layout": 19.1,
+   "raster": 0,
+   "heapMB": 1.9,
+   "nodes": 5229,
+   "label": "简谱：文本 + CSS",
+   "buildHot": 8.6,
+   "rps": 34.2,
+   "frameMs": 29.26
+  },
+  "jianpuSVG": {
+   "build": 8.5,
+   "layout": 17.2,
+   "raster": 0,
+   "heapMB": 1.9,
+   "nodes": 3229,
+   "label": "简谱：SVG text/rect/circle",
+   "buildHot": 8,
+   "rps": 39.1,
+   "frameMs": 25.56
+  }
+ },
+ "errors": [],
+ "layout": {
+  "width": 1560.0000000000002,
+  "height": 1800,
+  "size": 6,
+  "perRow": 50,
+  "rows": 40
+ },
+ "canvasMP": 11.2,
+ "atlasMs": 1.8,
+ "unicodeCoverage": {
+  "U+1D15D 全音符": {
+   "w": 33.6,
+   "ok": true
+  },
+  "U+1D15F 四分音符": {
+   "w": 31.4,
+   "ok": true
+  },
+  "U+1D13D 四分休止符": {
+   "w": 27.8,
+   "ok": true
+  },
+  "U+2669 ♩ (BMP)": {
+   "w": 80,
+   "ok": true
+  },
+  "notdef 参照 U+FFFF": {
+   "w": 55.8
+  },
+  "fontUsed": "system-ui, \"Segoe UI\", sans-serif"
+ }
+}</pre>
+
+<script src="../src/geometry.js"></script>
+<script src="../src/render-svg.js"></script>
+<script src="../src/render-canvas.js"></script>
+<script src="../src/render-img-sprite.js"></script>
+<script src="../src/render-unicode-text.js"></script>
+<script src="../src/render-jianpu.js"></script>
+<script>
+(function () {
+  'use strict';
+  var q = new URLSearchParams(location.search);
+  var N_NOTES = parseInt(q.get('n') || '2000', 10);
+  var NOTATION = q.get('vocab') || 'mixed';   // mixed | dur | rest
+  var SIZE = parseFloat(q.get('size') || '6');   // 每个 staff space 的像素（谱面密度）
+  var PER_ROW = parseInt(q.get('perRow') || '50', 10);
+  var DUR = ['whole', 'half', 'quarter', 'eighth', 'sixteenth'];
+  var REST = ['restWhole', 'restHalf', 'restQuarter', 'restEighth', 'restSixteenth'];
+  var GLYPHS = NOTATION === 'rest' ? REST : (NOTATION === 'dur' ? DUR : DUR.concat(REST));
+
+  var stage = document.getElementById('stage');
+  var errs = [];
+  window.onerror = function (m) { errs.push(String(m)); };
+
+  var order = ['svg', 'canvasVector', 'canvasSprite', 'imgPerGlyph', 'cssAtlas',
+               'textSMP', 'textBMP', 'jianpuHTML', 'jianpuSVG'];
+
+  var out = { n: N_NOTES, dpr: window.devicePixelRatio, vocab: GLYPHS, results: {}, errors: errs };
+
+  // 统一布局（所有画法共用同一坐标，保证公平）
+  var layout = Notation.gridLayout(GLYPHS, N_NOTES,
+    { size: SIZE, pitch: 5.2, rowH: 7.5, perRow: PER_ROW });
+  out.layout = { width: layout.width, height: layout.height, size: layout.size,
+                 perRow: layout.perRow, rows: layout.rows };
+  // Canvas 的成本跟"画布总像素"成正比，DOM 的成本跟"节点数"成正比 —— 两个数都要记录
+  out.canvasMP = +(layout.width * layout.height * out.dpr * out.dpr / 1e6).toFixed(1);
+
+  // 一次性资源：预光栅化图集（画法 C/D/E 共用），单独计时
+  var t0 = performance.now();
+  var atlas = Renderers._buildAtlas(layout.size, window.devicePixelRatio || 1);
+  out.atlasMs = +(performance.now() - t0).toFixed(1);
+
+  out.unicodeCoverage = Renderers._unicodeCoverage();
+
+  function measure(id, fn) {
+    var host = document.createElement('div');
+    host.style.cssText = 'position:relative;width:' + layout.width + 'px';
+    stage.appendChild(host);
+    var r = { build: 0, layout: 0, raster: 0, heapMB: 0, nodes: 0 };
+    var t;
+    try {
+      t = performance.now();
+      var root = fn(host);
+      r.build = +(performance.now() - t).toFixed(1);
+
+      t = performance.now();
+      void host.getBoundingClientRect();
+      if (root) void root.getBoundingClientRect();
+      r.layout = +(performance.now() - t).toFixed(1);
+
+      var renderer = Renderers[id];
+      if (renderer && renderer.flush) {
+        t = performance.now();
+        renderer.flush(root);
+        r.raster = +(performance.now() - t).toFixed(1);
+      }
+      r.nodes = host.querySelectorAll('*').length;
+      if (performance.memory) r.heapMB = +(performance.memory.usedJSHeapSize / 1048576).toFixed(1);
+    } catch (e) {
+      r.error = String(e && e.message || e);
+      errs.push(id + ': ' + r.error);
+    }
+    stage.removeChild(host);
+    out.results[id] = r;
+    return r;
+  }
+
+  function run(id) {
+    var R = Renderers[id];
+    if (!R) { errs.push('missing renderer ' + id); return; }
+    // 预热（第一次可能触发字体加载/路径缓存/解码，不计入）
+    try { var h = document.createElement('div'); stage.appendChild(h); R.render(h, layout, atlas); stage.removeChild(h); }
+    catch (e) { errs.push('warmup ' + id + ': ' + e); }
+    var r = measure(id, function (host) {
+      if (id === 'canvasSprite' || id === 'imgPerGlyph' || id === 'cssAtlas') return R.render(host, layout, atlas);
+      return R.render(host, layout);
+    });
+    r.label = R.label;
+  }
+
+  order.forEach(run);
+
+  // 第二轮：同上但复用热缓存，用来观察“重建整谱”的稳定值
+  order.forEach(function (id) {
+    var hot = out.results[id];
+    if (hot && !hot.error) hot.buildHot = measure(id + '__hot', function (host) { return Renderers[id].render(host, layout, atlas); }).build;
+  });
+  order.forEach(function (id) { delete out.results[id + '__hot']; });
+
+  // 第三轮：连续重绘吞吐（模拟拖动/缩放时每秒能整谱重绘几次）
+  order.forEach(function (id) {
+    var r = out.results[id];
+    if (!r || r.error) return;
+    var host = document.createElement('div');
+    host.style.cssText = 'position:relative;width:' + layout.width + 'px';
+    stage.appendChild(host);
+    var R = Renderers[id], count = 0, t0 = performance.now(), deadline = t0 + 400;
+    while (performance.now() < deadline) {
+      host.innerHTML = '';
+      var root = R.render(host, layout, atlas);
+      void host.getBoundingClientRect();          // 强制样式/布局
+      if (R.flush) R.flush(root);                 // Canvas：把光栅化也算进去
+      count++;
+    }
+    var dt = performance.now() - t0;
+    r.rps = +(count / (dt / 1000)).toFixed(1);
+    r.frameMs = +(dt / count).toFixed(2);
+    stage.removeChild(host);
+  });
+
+  var json = JSON.stringify(out);
+  document.body.setAttribute('data-bench', json);
+  document.getElementById('raw').textContent = JSON.stringify(out, null, 1);
+  renderTable();
+
+  function renderTable() {
+    var rows = order.map(function (id) {
+      var r = out.results[id] || {};
+      var avg = r.build && r.buildHot ? ((r.build + r.buildHot) / 2).toFixed(1) : (r.build || '');
+      return '<tr><td>' + (r.label || id) + '</td><td>' + (r.build || '') + '</td><td>' + (r.buildHot || '') +
+             '</td><td>' + avg + '</td><td>' + (r.layout || '') + '</td><td>' + (r.raster || '') + '</td><td>' +
+             (r.nodes || '') + '</td><td>' + (r.heapMB || '') + '</td><td>' + (r.frameMs || '') + '</td><td>' + (r.rps || '') + '</td></tr>';
+    }).join('');
+    document.getElementById('report').innerHTML =
+      '<table><tr><th>画法</th><th>首次构建 ms</th><th>热缓存构建 ms</th><th>平均构建 ms</th>' +
+      '<th>强制布局 ms</th><th>光栅化 ms</th><th>DOM 节点</th><th>JS 堆 MB</th>' +
+      '<th>整谱重绘 ms</th><th>重绘/秒</th></tr>' + rows + '</table>';
+    document.getElementById('meta').textContent =
+      '音符数 N=' + out.n + '　devicePixelRatio=' + out.dpr + '　布局 ' + layout.width + '×' + layout.height +
+      'px　图集预光栅化 ' + out.atlasMs + 'ms';
+  }
+})();
+</script>
+
+
+
+</body></html>

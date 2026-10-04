@@ -1,0 +1,21 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>cssAtlas dpr 测试</title>
+<body style="margin:0;background:#fff;font:12px system-ui">
+<div style="padding:6px">dpr 测试：三个音符用 cssAtlas 渲染，应显示 四分音符 / 八分音符 / 四分休止符</div>
+<div id="host" style="position:relative;margin:6px"></div>
+<!-- 这个页面在 bench/ 下，所以脚本路径是 ../src/ -->
+<script src="../src/geometry.js"></script>
+<script src="../src/render-canvas.js"></script>
+<script src="../src/render-img-sprite.js"></script>
+<script>
+var layout = {
+  size: 12, width: 320, height: 90,
+  notes: [
+    { glyph: 'quarter',      x: 40,  y: 50 },
+    { glyph: 'eighth',       x: 110, y: 50 },
+    { glyph: 'restQuarter',  x: 180, y: 50 }
+  ]
+};
+Renderers.cssAtlas.render(document.getElementById('host'), layout);
+</script>

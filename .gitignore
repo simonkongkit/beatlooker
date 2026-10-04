@@ -1,0 +1,34 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# 真实演奏录音样本：含个人音频数据，且体积大（约 15MB），不进仓库。
+# 需要跑 tools/check-onset.mjs 里那两条真实录音用例时，本地放回 samples/ 即可。
+samples/
+
+# 基准测试跑出来的 Chrome 配置目录（含第三方扩展、缓存），属垃圾，不进仓库。
+notation-perf/bench/.chrome-profile/
+
+# 自检/预览脚本的临时目录
+*.tmpdir/

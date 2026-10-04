@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<title>记谱画法对照 demo</title>
+<style>
+  body{font:13px/1.6 system-ui,"Segoe UI",sans-serif;margin:16px;color:#222}
+  h2{font-size:14px;margin:18px 0 4px}
+  .panel{border:1px solid #ddd;border-radius:6px;padding:8px;overflow:auto;background:#fff}
+  .bar{display:flex;gap:16px;align-items:center;margin:8px 0 16px}
+  code{background:#f3f3f3;padding:1px 4px;border-radius:3px}
+</style>
+<body>
+<h1 style="font-size:17px">同一份记谱数据，四种画法并排对照</h1>
+<div class="bar">
+  <label>谱面大小 <input id="size" type="range" min="4" max="14" step="1" value="8"> <b id="sizeVal">8</b> px/线距</label>
+  <label><input id="showJianpu" type="checkbox" checked> 同时显示简谱</label>
+</div>
+<div id="out"></div>
+
+<script src="src/geometry.js"></script>
+<script src="src/render-svg.js"></script>
+<script src="src/render-canvas.js"></script>
+<script src="src/render-img-sprite.js"></script>
+<script src="src/render-unicode-text.js"></script>
+<script src="src/render-jianpu.js"></script>
+<script>
+(function () {
+  'use strict';
+  var GLYPHS = ['whole', 'half', 'quarter', 'eighth', 'sixteenth',
+                'restWhole', 'restHalf', 'restQuarter', 'restEighth', 'restSixteenth'];
+  var OFFS   = [0, -1, 0, 1, 0, -1, 0, 1, 0, -1];   // 以线距为单位的音高位置
+
+  // 一份"谱面数据"：所有画法共用（这就是真正的核心：几何与布局分离）
+  function buildLayout(size) {
+    var step = 5 * size, x0 = 2 * size, top = 4 * size;
+    var notes = GLYPHS.map(function (g, i) {
+      return { glyph: g, x: x0 + i * step, y: top + size * 2 + OFFS[i] * size };
+    });
+    return { notes: notes, size: size, width: x0 * 2 + GLYPHS.length * step, height: top * 2 + size * 4 };
+  }
+
+  function panel(title, draw) {
+    var h = document.createElement('h2'); h.textContent = title; out.appendChild(h);
+    var box = document.createElement('div'); box.className = 'panel'; out.appendChild(box);
+    try { draw(box); } catch (e) { box.textContent = '渲染失败：' + e.message; }
+    return box;
+  }
+
+  var out = document.getElementById('out');
+  var sizeEl = document.getElementById('size'), sizeVal = document.getElementById('sizeVal');
+  var jpEl = document.getElementById('showJianpu');
+
+  function render() {
+    var size = +sizeEl.value;
+    sizeVal.textContent = size;
+    out.innerHTML = '';
+    var layout = buildLayout(size);
+    var atlas = Renderers._buildAtlas(size, window.devicePixelRatio || 1); // 精灵/图片方案的一次性成本
+
+    panel('SVG 矢量（每形状一个 <path>）', function (box) {
+      var l = buildLayout(size), svgWrap = document.createElement('div');
+      svgWrap.style.position = 'relative';
+      box.appendChild(svgWrap);
+      Renderers.svg.render(svgWrap, l);
+      drawStaffLines(svgWrap, l, 'svg');
+    });
+
+    panel('Canvas 2D 矢量路径', function (box) {
+      var l = buildLayout(size), w = document.createElement('div');
+      w.style.position = 'relative'; box.appendChild(w);
+      Renderers.canvasVector.render(w, l);
+      drawStaffLines(w, l, 'canvas');
+    });
+
+    panel('Canvas 2D 精灵位图（drawImage） + 图片每记号一张 PNG', function (box) {
+      var l = buildLayout(size), w = document.createElement('div');
+      w.style.position = 'relative'; box.appendChild(w);
+      Renderers.canvasSprite.render(w, l, atlas);
+      drawStaffLines(w, l, 'canvas');
+      var l2 = buildLayout(size), w2 = document.createElement('div');
+      w2.style.position = 'relative'; w2.style.marginTop = '8px'; box.appendChild(w2);
+      Renderers.imgPerGlyph.render(w2, l2, atlas);
+      drawStaffLines(w2, l2, 'none');
+    });
+
+    panel('Unicode 文本（系统音乐字体，仅作兼容性对照）', function (box) {
+      Renderers.textSMP.render(box, buildLayout(size));
+      var p = document.createElement('div');
+      var c = Renderers._unicodeCoverage();
+      p.textContent = '本机检测：U+1D15D 有字形=' + c['U+1D15D 全音符'].ok +
+                      '，U+1D13D 有字形=' + c['U+1D13D 四分休止符'].ok;
+      p.style.color = '#666'; p.style.fontSize = '12px';
+      box.appendChild(p);
+    });
+
+    if (jpEl.checked) {
+      panel('简谱（数字 + CSS 下划线/八度点）', function (box) {
+        var step = 8 * size, x0 = 2 * size;
+        var notes = GLYPHS.map(function (g, i) {
+          return { glyph: g, x: x0 + i * step, y: 3 * size };
+        });
+        Renderers.jianpuHTML.render(box, {
+          notes: notes, size: size, width: x0 * 2 + GLYPHS.length * step, height: 6 * size
+        });
+      });
+    }
+  }
+
+  // 五线谱线：仅用于视觉参考，不属于被测画法
+  function drawStaffLines(box, layout, mode) {
+    var top = 4 * layout.size, w = layout.width;
+    if (mode === 'none') return;
+    if (mode === 'svg') {
+      var svg = box.querySelector('svg'), NS = 'http://www.w3.org/2000/svg';
+      for (var k = -2; k <= 2; k++) {
+        var ln = document.createElementNS(NS, 'line');
+        ln.setAttribute('x1', 0); ln.setAttribute('x2', w);
+        ln.setAttribute('y1', top + (k + 2) * layout.size);
+        ln.setAttribute('y2', top + (k + 2) * layout.size);
+        ln.setAttribute('stroke', '#bbb'); ln.setAttribute('stroke-width', 1);
+        svg.insertBefore(ln, svg.firstChild);
+      }
+    } else {
+      var cv = box.querySelector('canvas');
+      var ctx = cv.getContext('2d'), dpr = window.devicePixelRatio || 1;
+      ctx.save(); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.strokeStyle = '#bbb'; ctx.lineWidth = 1;
+      for (var j = -2; j <= 2; j++) {
+        ctx.beginPath();
+        ctx.moveTo(0, top + (j + 2) * layout.size);
+        ctx.lineTo(layout.width, top + (j + 2) * layout.size);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+  }
+
+  sizeEl.addEventListener('input', render);
+  jpEl.addEventListener('change', render);
+  // 浏览器缩放、或把窗口拖到不同 DPI 的显示器后 devicePixelRatio 会变，
+  // 旧图集和旧 canvas 就都失效了（尺寸还对，但清晰度是旧 dpr 的）。
+  // 这种情况 resize 不一定触发，所以显式监听 DPR 变化并整体重画。
+  Renderers.watchDpr(render);
+  render();
+})();
+</script>
+</body>
+</html>

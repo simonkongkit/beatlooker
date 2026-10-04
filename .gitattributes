@@ -1,0 +1,12 @@
+# start-dev.bat 必须是 CRLF 行尾：cmd.exe 解析 LF-only 的批处理会错位
+# （echo 整行消失、ping 的参数被当成命令执行），详见 README「几个容易踩的点」。
+# 钉死在这里，避免 Git 的换行转换或 GitHub 打 ZIP 时把它改坏。
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 二进制文件不做任何换行转换
+*.png binary
+*.jpg binary
+*.wav binary
+*.webm binary
+*.mp3 binary

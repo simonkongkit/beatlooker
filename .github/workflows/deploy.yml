@@ -1,0 +1,56 @@
+name: Build and deploy to GitHub Pages
+
+# 推到 main 就自动构建并发布；也可以在 Actions 页面手动点一次。
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# GitHub Pages 官方要求的权限组合：读取仓库 + 写 Pages + 用 OIDC 换部署令牌。
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# 同一时间只保留最新一次部署，旧的自然取消。
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # 用 npm ci 而不是 npm install：lock 文件必须和 package.json 严格一致。
+      - run: npm ci
+
+      # 项目页部署在 https://<user>.github.io/<repo>/ 下，资源前缀必须是 /<repo>/。
+      # 这里用仓库名动态取，改仓库名也不用动这个文件。
+      # 如果以后绑定了自定义域名（页面在根路径），把 APP_BASE 改成 '/' 即可。
+      - name: Build
+        env:
+          APP_BASE: /${{ github.event.repository.name }}/
+        run: npm run build
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

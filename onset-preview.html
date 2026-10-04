@@ -1,0 +1,144 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>演奏检测预览</title>
+<body style="margin:0;background:#07070c;color:#8f8fa6;font:12px system-ui">
+<div id="out" style="padding:12px"></div>
+<!-- 出错时把原因写进 title，这样 --dump-dom 就能看到，不用猜 -->
+<script>
+window.addEventListener('error', (e) => { document.title = 'ERR::' + (e.message || e.type) })
+window.addEventListener('unhandledrejection', (e) => { document.title = 'ERR::' + e.reason })
+</script>
+<script type="module">
+import { makeNote } from '/src/lib/notation/rhythm.ts'
+// 注意：expectedOnsets 在 onset.ts 里，不在 rhythm.ts —— 第一版就是从 rhythm 导入的，
+// 具名导出不存在会让整个模块直接不执行（不是运行时才报错）
+import { detectOnsetsWithNotes, expectedOnsets, matchTempo } from '/src/lib/onset.ts'
+import { buildBands } from '/src/lib/noteBands.ts'
+import {
+  DETECTION_BARS_PER_ROW,
+  detectionHeight,
+  renderDetection
+} from '/src/lib/onsetView.ts'
+
+const RATE = 93.75   // 和引擎实际产出速率一致
+
+/** 合成能量包络：每个起点处幅度跳起，之后按 tau 衰减，再叠一层本底噪声 */
+function synth(times, amps, seconds, rate, tau = 0.035, noise = 2e-5) {
+  const n = Math.round(seconds * rate)
+  const e = new Float32Array(n)
+  // 固定的伪随机本底，保证预览页每次一样
+  let seed = 12345
+  for (let i = 0; i < n; i++) {
+    seed = (seed * 1103515245 + 12345) & 0x7fffffff
+    e[i] = noise * (0.4 + (seed % 1000) / 1000)
+  }
+  times.forEach((t, idx) => {
+    const s = Math.round(t * rate)
+    const amp = amps[idx] ?? 1
+    for (let k = 0; s + k < n; k++) {
+      const a = amp * Math.exp(-k / (rate * tau))
+      e[s + k] += a * a
+    }
+  })
+  return e
+}
+
+const q = (o) => makeNote('quarter', o)
+const e8 = (o) => makeNote('eighth', o)
+const h = (o) => makeNote('half', o)
+
+// 和 App 里默认填的那三小节一致：弱起 1 拍 + 两个满小节
+const bars = [[q()], [q(), q(), q(), q()], [h(), q(), e8(), e8()]]
+const expected = expectedOnsets(bars)
+
+const LEAD = 0.6
+const BPM = 96
+const spq = 60 / BPM
+
+// 故意制造三种真实错误：漏一个音、有一个音弹晚了、末尾多打一下
+const jitter = [0.01, -0.02, 0.015, 0, -0.01, 0.03, -0.015, 0.02, 0.07]
+const amps   = [1, 0.9, 0.95, 1, 0.7, 1, 0.55, 0.5, 0.85]
+const played = []
+expected.forEach((p, i) => {
+  if (i === 3) return                       // 漏掉第 4 个音
+  played.push(LEAD + p * spq + (jitter[i] ?? 0))
+})
+played.push(LEAD + expected[expected.length - 1] * spq + 0.5 * spq)  // 末尾多打一下
+
+// 用真实的建带函数切频带，再给每个音一个音高，让那条带抬起来 ——
+// 这样验证的是和 App 里完全相同的链路，而不是另造一套
+const bands = buildBands(50, 16000, 2048, 48000)
+const n = Math.round(8 * RATE)
+const dbByBand = bands.map(() => new Float32Array(n).fill(-75))
+const PITCHES = [69, 72, 76, 79, 81, 84, 88, 91, 93] // A4 C5 E5 G5 A5 C6 E6 G6 A6
+played.forEach((t, i) => {
+  const midi = PITCHES[i % PITCHES.length]
+  const b = bands.findIndex((x) => midi >= x.minMidi && midi <= x.maxMidi)
+  if (b < 0) return
+  const s = Math.round(t * RATE)
+  for (let k = 0; s + k < n; k++) {
+    dbByBand[b][s + k] += (amps[i] ?? 1) * 28 * Math.exp(-k / (RATE * 0.45))
+  }
+})
+
+// 总能量由各条带合成 —— 和真实链路一样，两者是从同一份频谱出来的
+const energies = new Float32Array(n)
+for (let i = 0; i < n; i++) {
+  let sum = 1e-9
+  for (const s of dbByBand) sum += Math.pow(10, s[i] / 10)
+  energies[i] = sum
+}
+
+const onsets = detectOnsetsWithNotes(dbByBand, bands, RATE)
+const match = matchTempo(onsets.map((o) => o.time), expected)
+
+const out = document.getElementById('out')
+const head = document.createElement('div')
+head.style.cssText = 'font:13px/1.7 ui-monospace,monospace;color:#cfcfe0;margin-bottom:10px'
+head.innerHTML =
+  '真实速度 <b style="color:#7dd3fc">' + BPM + ' BPM</b>　·　' +
+  '实际弹了 ' + played.length + ' 下（含末尾多打 1 下，漏弹 1 个音）　·　' +
+  onsets.filter((o) => o.note).length + '/' + onsets.length + ' 个起点识别出了音名<br>' +
+  '识别到的音：<b style="color:#fbbf24">' +
+  onsets.filter((o) => o.note).map((o) => o.note.label + '@' + o.time.toFixed(2) + 's').join('  ') +
+  '</b><br>' +
+  '检测到起点 <b>' + onsets.length + '</b>　·　' +
+  '期望音符 <b>' + expected.length + '</b>　·　' +
+  (match
+    ? '对上 <b style="color:#6ee7b7">' + match.matches + '/' + match.expectedCount + '</b>　·　' +
+      '测得 <b style="color:#7dd3fc;font-size:15px">' + match.bpm.toFixed(1) + ' BPM</b>　·　' +
+      '平均偏差 <b>' + (match.meanAbsError * 1000).toFixed(0) + ' ms</b>　·　' +
+      '多打 <b style="color:#f472b6">' + match.extras.length + '</b>　·　' +
+      'F1 <b>' + match.f1.toFixed(2) + '</b>'
+    : '没匹配上')
+out.appendChild(head)
+
+// 每个小节多少拍（四分音符为单位），检测结果按小节分行
+const barTotals = bars.map((b) => b.reduce((s, n) => s + n.value, 0))
+const rows = Math.ceil(barTotals.length / DETECTION_BARS_PER_ROW)
+
+const cv = document.createElement('canvas')
+const dpr = window.devicePixelRatio || 1
+const W = 900
+const H = detectionHeight(barTotals.length, DETECTION_BARS_PER_ROW)
+cv.width = W * dpr; cv.height = H * dpr
+cv.style.cssText = 'display:block;width:' + W + 'px;height:' + H + 'px'
+out.appendChild(cv)
+const ctx = cv.getContext('2d')
+ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+renderDetection({
+  ctx, width: W, height: H,
+  energies, rate: RATE, onsets, match,
+  barTotals, barsPerRow: DETECTION_BARS_PER_ROW,
+  playhead: 2.6   // 回放头（分析时间轴上的秒数）
+})
+
+const note = document.createElement('div')
+note.style.cssText = 'margin-top:8px;font:11px/1.6 ui-monospace,monospace;color:#6b6b85'
+note.textContent =
+  '每行 ' + DETECTION_BARS_PER_ROW + ' 个小节 -> ' + rows + ' 行　·　' +
+  '小节长度 ' + barTotals.map((t) => t + '拍').join(' / ')
+out.appendChild(note)
+
+document.title = 'ready::detected=' + onsets.length + ' bpm=' + (match ? match.bpm.toFixed(1) : 'none')
+</script>
